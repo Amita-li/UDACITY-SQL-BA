@@ -1,0 +1,126 @@
+/*1、各种类产品整体销售情况*/
+
+/*销售额=数量*单价*（1-折扣），根据产品种类和名称进行分组，计算各类产品销售额*/
+
+SELECT (c.CategoryID || ' ' || c.CategoryName) AS CategoryIDName, SUM(od.Quantity * od.UnitPrice * (1-od.Discount)) total_sales
+FROM OrderDetails od
+JOIN Products p
+ON od.ProductID = p.ProductID
+JOIN Categories c
+ON p.CategoryID = c.CategoryID
+GROUP BY 1
+ORDER BY 2 DESC;
+
+/*2、销售上涨产品*/
+
+/*通过查看orders表可知，本项目中订单最早日期为2014-07-04，最晚日期为2016-05-06，数据量不足24个月。
+故进行2014-07-01~2014-12-31和2015-07-01~2015-12-31，以及2015-01-01~2015-04-30和2016-01-01~2016-04-30的销售额对比，
+两个阶段销售额均上涨，认为销量上涨。两个阶段销售额均下降，认为销量下降。
+因最终得到销量上涨的产品数量较多，故销量上涨产品选择销售额上涨超5000进行展示。*/
+
+/*2014-07-01~2014-12-31和2015-07-01未停产产品销量*/
+WITH t1 AS
+	(SELECT p.ProductID, p.ProductName, sum(od.Quantity * od.UnitPrice * (1-od.Discount)) Pro_sales1
+	FROM Products p
+	JOIN OrderDetails od
+	ON p.ProductID = od.ProductID
+	JOIN Orders o
+	ON od.OrderID = o.OrderId
+	WHERE o.OrderDate >= '2014-07-01' AND o.OrderDate <= '2014-12-31' AND p.Discontinued = 0
+	GROUP BY 1),
+
+/*2015-07-01~2015-12-31未停产产品销量*/
+t2 AS
+	(SELECT p.ProductID, p.ProductName, sum(od.Quantity * od.UnitPrice * (1-od.Discount)) Pro_sales1_1
+	FROM Products p
+	JOIN OrderDetails od
+	ON p.ProductID = od.ProductID
+	JOIN Orders o
+	ON od.OrderID = o.OrderId
+	WHERE o.OrderDate >= '2015-07-01' AND o.OrderDate <= '2015-12-31' AND p.Discontinued = 0
+	GROUP BY 1),
+
+/*2015-01-01~2015-04-30未停产产品销量*/	
+t3 AS
+	(SELECT p.ProductID, p.ProductName, sum(od.Quantity * od.UnitPrice * (1-od.Discount)) Pro_sales2
+	FROM Products p
+	JOIN OrderDetails od
+	ON p.ProductID = od.ProductID
+	JOIN Orders o
+	ON od.OrderID = o.OrderId
+	WHERE o.OrderDate >= '2015-01-01' AND o.OrderDate <= '2015-04-30' AND p.Discontinued = 0
+	GROUP BY 1),
+
+/*2015-01-01~2015-04-30未停产产品销量*/
+t4 AS
+	(SELECT p.ProductID, p.ProductName, sum(od.Quantity * od.UnitPrice * (1-od.Discount)) Pro_sales2_2
+	FROM Products p
+	JOIN OrderDetails od
+	ON p.ProductID = od.ProductID
+	JOIN Orders o
+	ON od.OrderID = o.OrderId
+	WHERE o.OrderDate >= '2016-01-01' AND o.OrderDate <= '2016-04-30' AND p.Discontinued = 0
+	GROUP BY 1)
+
+/*计算两个阶段销售额上涨值，并选择两阶段销售额皆上涨且上涨总额超过5000，以及两阶段销售额皆下降产品*/
+SELECT (t1.ProductID || ' ' || t1.ProductName) Product_ID_Name, 
+	(t2.Pro_sales1_1 - t1.Pro_sales1) + (t4.Pro_sales2_2 - t3.Pro_sales2) AS sales_growth
+FROM t1
+JOIN t2
+ON t1.ProductID = t2.ProductID
+JOIN t3
+ON t2.ProductID = t3.ProductID
+JOIN t4
+ON t4.ProductID = t3.ProductID
+WHERE ((t2.Pro_sales1_1 - t1.Pro_sales1) > 0 AND (t4.Pro_sales2_2 - t3.Pro_sales2) > 0 AND ((t2.Pro_sales1_1 - t1.Pro_sales1) + (t4.Pro_sales2_2 - t3.Pro_sales2) >= 5000)) OR ((t2.Pro_sales1_1 - t1.Pro_sales1) <= 0 AND (t4.Pro_sales2_2 - t3.Pro_sales2) <= 0)
+ORDER BY 2 DESC;
+
+/*3、销量下降产品月销量分析*/
+
+/*销量分析中，销量下降产品id=74的月销量分析*/
+SELECT STRFTIME('%Y-%m', o.OrderDate) ord_date, sum(od.Quantity * od.UnitPrice * (1-od.Discount)) month_sales
+FROM Products p
+JOIN OrderDetails od
+ON p.ProductID = od.ProductID
+JOIN Orders o
+ON o.OrderId = od.OrderID
+WHERE p.Discontinued = 1
+GROUP BY 1;
+
+
+/*4、停产产品库存是否满足需求*/
+
+/*t1为订单及订单详情中未运送到收货方的订单及物品详情列表*/
+
+WITH t1 AS
+	(SELECT od.ProductID, SUM(od.Quantity) req_qty
+	FROM OrderDetails od
+	JOIN Orders o
+	ON od.OrderID = o.OrderId
+	WHERE o.ShippedDate IS NULL
+	GROUP BY 1),
+
+/*t2为产品表中已停产物品ID，名称，库存，停产信息*/
+
+t2 AS
+	(SELECT ProductID, ProductName, UnitsInStock, Discontinued
+	FROM Products
+	WHERE Discontinued = 1),
+
+/*t3为t2左连接t1得到的表，显示已停产物品ID，名称，库存，需求（无需求则填充为0），停产信息*/
+
+t3 AS
+	(SELECT t2.ProductID, t2.ProductName, t2.UnitsInStock, 
+	        CASE WHEN t1.req_qty IS NULL THEN COALESCE(t1.req_qty,0)
+		ELSE COALESCE(t1.req_qty, t1.req_qty) END AS alter_req_qty,
+		t2.Discontinued
+	FROM t2
+	LEFT JOIN t1
+	ON t2.ProductID = t1.ProductID)
+
+/*将t3中库存与需求进行比较，库存为0或库存小于需求认为无法满足*/	
+
+SELECT (ProductID || ' ' || ProductName) Product_ID_Name, UnitsInStock, alter_req_qty,
+	CASE WHEN (UnitsInStock > 0 AND UnitsInStock < alter_req_qty) OR UnitsInStock = 0 THEN 'NO'
+	ELSE 'YES' END AS stock_meet_req
+FROM t3;
